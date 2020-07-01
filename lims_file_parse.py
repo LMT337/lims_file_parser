@@ -2,6 +2,10 @@ import os
 import sys
 import csv
 from multiprocessing import Pool
+import smartsheet
+import requests
+
+__author__ = 'Lee Trani'
 
 """Usage:
    python3 lims_file_parse.py <WOID>
@@ -10,55 +14,59 @@ from multiprocessing import Pool
 
 def query(path, work_order):
 
-    """__author__ = 'Andrew Emory'
-       generate LIMS files
+    """
+    __author__ = 'Andrew Emory'
+    generate LIMS files
+    :param path: directory path
+    :param work_order: input woid
+    :return: file path dict
     """
 
     path = path + '/'
     print("Querying work-order: %s." % work_order)
 
-    illumina_info = "illumina_info -report library_index_summary --format csv -woid %s --incomplete --output-file-name " \
-                    "%sillumina_info.csv" % (work_order, path)
-    wo_info = "wo_info --report bam_path -wo %s --format csv --output-file-name %swo_info.csv" % (work_order, path)
+    illumina_info = "illumina_info -report library_index_summary --format csv -woid %s --incomplete " \
+                    "--output-file-name %sillumina_info.csv > /dev/null 2>&1 " % (work_order, path)
+    wo_info = "wo_info --report bam_path -wo %s --format csv --output-file-name %swo_info.csv > /dev/null 2>&1" \
+              % (work_order, path)
     limfo = "limfo e sequence-allocation-path --report result_set_search --setup-wo-id %s  --format csv " \
-        "--output-file-name %slimfo.csv" % (work_order, path)
-    wo_sample = "wo_info --report sample -wo %s --format csv --output-file-name %swo_sample.csv" % (work_order, path)
-    wo_billing = "wo_info --report billing -wo %s --format csv --output-file-name %swo_billing.csv" % (work_order, path)
+            "--output-file-name %slimfo.csv > /dev/null 2>&1" % (work_order, path)
+    wo_sample = "wo_info --report sample -wo %s --format csv --output-file-name %swo_sample.csv > /dev/null 2>&1" \
+                % (work_order, path)
+    wo_billing = "wo_info --report billing -wo %s --format csv --output-file-name %swo_billing.csv> /dev/null 2>&1" \
+                 % (work_order, path)
+    wo_library = "limfo e library-summary --setup-wo-id %s --format csv --output-file-name %swo_library > " \
+                 "/dev/null 2>&1" % (work_order, path)
 
-    processes = (illumina_info, wo_info, limfo, wo_sample, wo_billing)
-    pool = Pool(processes=5)
+    processes = (illumina_info, wo_info, limfo, wo_sample, wo_billing, wo_library)
+    pool = Pool(processes=6)
     pool.map(os.system, processes)
-
-    check = os.listdir(path)
-
-    if not "illumina_info.csv" in check:
-        print("Something went wrong with the illumina_info query.")
-        sys.exit()
-    elif not "wo_info.csv" in check:
-        print("Something went wrong with the wo_info query.")
-        sys.exit()
-    elif not "limfo.csv" in check:
-        print("Something went wrong with the limfo query.")
-        sys.exit()
-    elif not "wo_sample.csv" in check:
-        print("Something went wrong with the wo_sample query.")
-        sys.exit()
 
     m = {"illumina_info.csv": path + "illumina_info.csv", "wo_info.csv": path + "wo_info.csv",
          "limfo.csv": path + "limfo.csv", "wo_sample.csv": path + "wo_sample.csv",
-         "wo_billing.csv": path + "wo_billing.csv"}
+         "wo_billing.csv": path + "wo_billing.csv", "wo_library.csv": path + "wo_library.csv"}
+
+    # edited by ltrani
+    # sys.exit will only occur if illumina_info or limfo file query fails
+    for f, p in m.items():
+        if not os.path.isfile(p):
+            print("Something went wrong with the {} query.".format(f))
+            if f in ['illumina_info.csv', 'limfo.csv']:
+                sys.exit('{} file query failed'.format(f))
 
     return m
 
 
 def illumina_limfo_file_merge(illumina_file, limfo_file, woid):
 
-    """__author__ = 'Lee Trani'
-       Combine illumina_info and limfo query result csv files
+    """
+    Combine illumina_info and limfo query result csv files
+    :param illumina_file: illumina_info file
+    :param limfo_file: limfo file
     """
 
     with open(limfo_file, 'r') as limfo, open(illumina_file, 'r') as illumina, open(
-            '{}.illumina.limfo.csv'.format(woid), 'w') as outfile:
+            '{}.illumina.limfo.merged.csv'.format(woid), 'w') as outfile:
 
         limfo_reader = csv.reader(limfo)
         limfo_data = {}
@@ -114,18 +122,19 @@ def illumina_limfo_file_merge(illumina_file, limfo_file, woid):
                     if library in fastq:
                         outfile_writer.writerow({**illumina_data[library], **line_dict})
 
-    return '{}.illumina.limfo.csv'.format(woid)
+    return '{}.illumina.limfo.merged.csv'.format(woid)
 
 
-def wo_sample_merge(illumina_limfo_file, wo_sample_file, woid):
+def wo_sample_merge(illumina_limfo_file, wo_sample_file):
 
-    """__author__ = 'Lee Trani'
-       Combine illumina_info_limfo merge file and wo_sample.csv
-       Header fields have _wo_sample appended
+    """
+    Combine illumina_info_limfo merge file and wo_sample.csv
+    Header fields have _wo_sample appended
+    :param illumina_limfo_file: merged illumina/limfo file
+    :param wo_sample_file: wo_sample.csv
     """
 
-    with open(wo_sample_file, 'r') as wosf, open(illumina_limfo_file, 'r') as ilf, open(
-            '{}.illumina.limfo.sample.csv'.format(woid), 'w') as outfile:
+    with open(wo_sample_file, 'r') as wosf, open(illumina_limfo_file, 'r') as ilf, open('temp.csv', 'w') as outfile:
 
         wosf_reader = csv.reader(wosf)
         wosf_data = {}
@@ -155,19 +164,20 @@ def wo_sample_merge(illumina_limfo_file, wo_sample_file, woid):
             if l['Full Name'] in wosf_data:
                 outfile_writer.writerow({**l, **wosf_data[l['Full Name']]})
 
-    os.remove(illumina_limfo_file)
-    return '{}.illumina.limfo.sample.csv'.format(woid)
+    os.rename('temp.csv', illumina_limfo_file)
 
 
-def wo_info_merge(illumina_limfo_sample_file, wo_info_file, woid):
+def wo_info_merge(illumina_limfo_sample_file, wo_info_file):
 
-    """__author__ = 'Lee Trani'
-       Combine illumina_info_limfo_sample merge file and wo_info.csv
-       Header fields have _wo_info appended
+    """
+    Combine illumina_info_limfo merge file and wo_info.csv
+    Header fields have _wo_info appended
+    :param illumina_limfo_sample_file: mmerged illumina/limfo file
+    :param wo_info_file: wo_info.csv
     """
 
-    with open(wo_info_file, 'r') as wif, open(illumina_limfo_sample_file, 'r') as ilsf, open(
-            '{}.illumina.limfo.sample.info.csv'.format(woid), 'w') as outfile:
+    with open(wo_info_file, 'r') as wif, open(illumina_limfo_sample_file, 'r') as ilsf, \
+            open('temp.csv', 'w') as outfile:
 
         wif_reader = csv.reader(wif)
         wif_data = {}
@@ -203,22 +213,138 @@ def wo_info_merge(illumina_limfo_sample_file, wo_info_file, woid):
             if l['Library'] in wif_data:
                 outfile_writer.writerow({**l, **wif_data[l['Library']]})
 
-    os.remove(illumina_limfo_sample_file)
-    return '{}.illumina.limfo.sample.info.csv'.format(woid)
+    os.rename('temp.csv', illumina_limfo_sample_file)
+
+
+def wo_library_merge(illumina_limfo_file, wo_library_file):
+
+    """
+    Combine illumina_info_limfo merge file and wo_library.csv
+    Header fields have _wo_library appended
+    :param illumina_limfo_file: merge illumina/limfo file
+    :param wo_library_file: wo_library.csv
+    """
+
+    with open(illumina_limfo_file, 'r') as ilf, open(wo_library_file, 'r') as wlf, \
+            open('temp.csv', 'w') as outfile:
+
+        wlf_reader = csv.reader(wlf)
+        wlf_data = {}
+        wlf_header_found = False
+
+        for l in wlf_reader:
+
+            if len(l) == 0 or 'Entity Data for Class' in l[0] or '-' in l[0]:
+                continue
+
+            if not wlf_header_found and '#' in l[0]:
+                wlf_header = ['{}_wo_library'.format(x.replace('"', '')) for x in l]
+                wlf_header_found = True
+                continue
+
+            if wlf_header_found:
+                l_dict = dict(zip(wlf_header, l))
+                wlf_data[l_dict['Full Name_wo_library']] = l_dict
+
+        ilf_reader = csv.DictReader(ilf)
+
+        outfile_writer = csv.DictWriter(outfile, fieldnames=ilf_reader.fieldnames + wlf_header[1:],
+                                        extrasaction='Ignore')
+        outfile_writer.writeheader()
+
+        for l in ilf_reader:
+            if l['Library'] in wlf_data:
+                outfile_writer.writerow({**l, **wlf_data[l['Library']]})
+
+    os.rename('temp.csv', illumina_limfo_file)
+
+
+def get_smartsheet_dt(illumina_limfo_file, woid):
+
+    """
+    Get corresponding work order information from Smartsheet
+    :param illumina_limfo_file: merged file
+    :param woid: woid to query
+    :return: exit after matching work order row
+    """
+    ss_columns = ['If Requires Transfer to GTAC Check Box', 'Work Order ID', 'Method of Transfer',
+                  'Manual Demux', 'Analysis/Transfer Instructions', 'Data Transfer Files', 'Data Recipients']
+
+    data = dict.fromkeys(ss_columns, 'NA')
+
+    ss = smartsheet.Smartsheet(os.environ.get('SMRT_API'))
+    ss.errors_as_exceptions()
+
+    col_dict = {}
+    for col in ss.Sheets.get_columns(5216932677871492).data:
+        if col.title in ss_columns:
+            col_dict[col.title] = col.id
+
+    for row in ss.Sheets.get_sheet(sheet_id=5216932677871492, column_ids=list(col_dict.values())).rows:
+
+        for cell in row.cells:
+            for title, id_ in col_dict.items():
+                if cell.column_id == id_:
+                    data[title] = cell.value
+
+        if data['Work Order ID'] == woid:
+
+            with open(illumina_limfo_file, 'r') as limfo, open('temp.file.csv', 'w') as outfile:
+
+                limfo_reader = csv.DictReader(limfo)
+                outfile_writer = csv.DictWriter(outfile, fieldnames=limfo_reader.fieldnames + list(data.keys()))
+                outfile_writer.writeheader()
+
+                for l in limfo_reader:
+                    outfile_writer.writerow({**l, **data})
+
+            os.rename('temp.file.csv', illumina_limfo_file)
+
+            attachments = []
+            for r in ss.Attachments.list_row_attachments(5216932677871492, row.id).data:
+                for c in [' ', '(', ')']:
+                    r.name = r.name.replace(c, '')
+                open(r.name, 'wb').write(requests.get(ss.Attachments.get_attachment(5216932677871492, r.id).url)
+                                         .content)
+                attachments.append(r.name)
+
+            if len(attachments) > 0:
+                print('Smartsheet attachments downloaded:\n{}'.format('\n'.join(attachments)))
+
+            return
 
 
 def main():
 
+    # clean up directory
+    process_files = ['illumina_info.csv', 'limfo.csv', 'wo_sample.csv', 'wo_info.csv', 'wo_library.csv']
+    for file in process_files:
+        if os.path.isfile(file):
+            os.remove(file)
+
     woid = sys.argv[1]
     # generate LIMS files
     file_dict = query(os.getcwd(), woid)
+
     # combine illumina_info and limfo files
     illumina_limfo_merged_file = illumina_limfo_file_merge(file_dict['illumina_info.csv'], file_dict['limfo.csv'], woid)
+
     # combine illumina_limfo file and wo_sample files
-    illum_limfo_merged_sample_file = wo_sample_merge(illumina_limfo_merged_file, file_dict['wo_sample.csv'], woid)
-    # combine illumina_limfo_sample and wo_info files
-    merged_file_final = wo_info_merge(illum_limfo_merged_sample_file, file_dict['wo_info.csv'], woid)
-    print('File parsing complete:\n{}'.format(merged_file_final))
+    if os.path.isfile(file_dict['wo_sample.csv']):
+        wo_sample_merge(illumina_limfo_merged_file, file_dict['wo_sample.csv'])
+
+    # combine illumina_limfo file and wo_info files
+    if os.path.isfile(file_dict['wo_info.csv']):
+        wo_info_merge(illumina_limfo_merged_file, file_dict['wo_info.csv'])
+
+    # combine illumina_limfo file and wo_library files
+    if os.path.isfile(file_dict['wo_library.csv']):
+        wo_library_merge(illumina_limfo_merged_file, file_dict['wo_library.csv'])
+
+    # get smartsheet data
+    get_smartsheet_dt(illumina_limfo_merged_file, woid)
+
+    print('Merged file:\n{}\nFile parsing complete'.format(illumina_limfo_merged_file))
 
 
 if __name__ == '__main__':
