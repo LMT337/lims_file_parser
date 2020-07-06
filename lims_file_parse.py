@@ -4,6 +4,8 @@ import csv
 from multiprocessing import Pool
 import smartsheet
 import requests
+import glob
+import yaml
 
 __author__ = 'Lee Trani'
 
@@ -63,6 +65,7 @@ def illumina_limfo_file_merge(illumina_file, limfo_file, woid):
     Combine illumina_info and limfo query result csv files
     :param illumina_file: illumina_info file
     :param limfo_file: limfo file
+    :param woid: input woid
     """
 
     with open(limfo_file, 'r') as limfo, open(illumina_file, 'r') as illumina, open(
@@ -314,6 +317,28 @@ def get_smartsheet_dt(illumina_limfo_file, woid):
             return
 
 
+def flowcell_lane_update(illumina_limfo_file):
+
+    with open(illumina_limfo_file, 'r') as limfo, open('temp.file.csv', 'w') as outfile:
+
+        limfo_reader = csv.DictReader(limfo)
+        outfile_writer = csv.DictWriter(outfile, fieldnames=limfo_reader.fieldnames + ['flowcell_yaml', 'lane_yaml'])
+        outfile_writer.writeheader()
+
+        for l in limfo_reader:
+            l['flowcell_yaml'] = 'NA'
+            l['lane_yaml'] = 'NA'
+            meta_yaml_file = glob.glob('{}/metadata.*.yaml'.format(os.path.dirname(l['Absolute Path String'])))
+            if len(meta_yaml_file) == 1 and os.path.isfile(meta_yaml_file[0]):
+                with open(meta_yaml_file[0], 'r') as f:
+                    yaml_data = yaml.load(f, Loader=yaml.FullLoader)
+                    l['flowcell_yaml'] = yaml_data['index_illumina']['flow_cell_id']
+                    l['lane_yaml'] = yaml_data['index_illumina']['lane']
+            outfile_writer.writerow(l)
+
+        os.rename('temp.file.csv', illumina_limfo_file)
+
+
 def main():
 
     # clean up directory
@@ -323,6 +348,7 @@ def main():
             os.remove(file)
 
     woid = sys.argv[1]
+
     # generate LIMS files
     file_dict = query(os.getcwd(), woid)
 
@@ -340,6 +366,9 @@ def main():
     # combine illumina_limfo file and wo_library files
     if os.path.isfile(file_dict['wo_library.csv']):
         wo_library_merge(illumina_limfo_merged_file, file_dict['wo_library.csv'])
+
+    # update flow cell/lane using meta file
+    flowcell_lane_update(illumina_limfo_merged_file)
 
     # get smartsheet data
     get_smartsheet_dt(illumina_limfo_merged_file, woid)
