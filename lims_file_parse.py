@@ -90,9 +90,9 @@ def illumina_limfo_file_merge(illumina_file, limfo_file, woid):
                 fastq_file = l_dict['Absolute Path String'].split('/')[-1]
                 if len(fastq_file) != 0:
                     if l_dict['Full Name'] not in limfo_data:
-                        limfo_data[l_dict['Full Name']] = {fastq_file: l_dict}
+                        limfo_data[l_dict['Full Name']] = {l_dict['Absolute Path String']: l_dict}
                     else:
-                        limfo_data[l_dict['Full Name']][fastq_file] = l_dict
+                        limfo_data[l_dict['Full Name']][l_dict['Absolute Path String']] = l_dict
 
         illumina_reader = csv.reader(illumina)
         illumina_data = {}
@@ -117,13 +117,16 @@ def illumina_limfo_file_merge(illumina_file, limfo_file, woid):
         outfile_writer.writeheader()
 
         for library in illumina_data.keys():
-            sample_name = library.split('-lib')[0]
-            if sample_name in limfo_data:
+            for sample_name in limfo_data.keys():
                 for fastq, line_dict in limfo_data[sample_name].items():
                     if illumina_data[library]['Index Sequence'] in fastq:
                         outfile_writer.writerow({**illumina_data[library], **line_dict})
                     if library in fastq:
                         outfile_writer.writerow({**illumina_data[library], **line_dict})
+
+        # file check
+        if sum(1 for l in open('{}.illumina.limfo.merged.csv'.format(woid))) == 1:
+            sys.exit('illumina_info/limfo merge failed, no matches found.')
 
     return '{}.illumina.limfo.merged.csv'.format(woid)
 
